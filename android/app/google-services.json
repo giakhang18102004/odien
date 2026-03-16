@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "1080180181022",
+    "firebase_url": "https://odienpremiumiot-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "odienpremiumiot",
+    "storage_bucket": "odienpremiumiot.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1080180181022:android:9c22f1813c3a9e3120460f",
+        "android_client_info": {
+          "package_name": "com.example.odienthongminh"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDo13Jc2stHQ_R3JgHTfn_yvSR7AXEUUlU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
