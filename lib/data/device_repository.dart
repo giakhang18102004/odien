@@ -16,7 +16,7 @@ class DeviceRepository {
       'https://odienpremiumiot-default-rtdb.asia-southeast1.firebasedatabase.app';
   static const String _databaseAuth = '';
 
-  static const Duration _dashboardPollInterval = Duration(seconds: 2);
+  static const Duration _dashboardPollInterval = Duration(seconds: 1);
   static const Duration _historyPollInterval = Duration(seconds: 3);
 
   Future<ConnectionSummary> fetchConnectionSummary() async {
@@ -61,17 +61,16 @@ class DeviceRepository {
         mirrorLegacyState ?? await _shouldMirrorRelayStateForDevice();
 
     final now = DateTime.now().millisecondsSinceEpoch;
-    final payload = <String, dynamic>{
-      'commandId': 'cmd_$now',
-      'target': relayId,
-      'action': turnOn ? 'on' : 'off',
-      'source': source,
-      'createdAt': now,
-    };
-
     final writes = <Future<void>>[
-      _setValue(_devicePath('command/latest'), payload),
-      _patchValue(_devicePath('state'), <String, dynamic>{relayId: turnOn}),
+      // ESP32 doc lenh tai devices/<deviceId>/control/<relayId>
+      _setValue(_devicePath('control/$relayId'), turnOn),
+      _setValue(_devicePath('command/latest'), <String, dynamic>{
+        'commandId': 'cmd_$now',
+        'target': relayId,
+        'action': turnOn ? 'on' : 'off',
+        'source': source,
+        'createdAt': now,
+      }),
     ];
 
     if (shouldMirrorState) {

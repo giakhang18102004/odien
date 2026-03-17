@@ -7,7 +7,7 @@ import 'package:odienthongminh/data/device_repository.dart';
 
 void main() {
   test(
-    'sendRelayCommand writes command/latest and state for modern protocol',
+    'sendRelayCommand writes control and command/latest for modern protocol',
     () async {
       final requests = <http.Request>[];
       final client = MockClient((http.Request request) async {
@@ -25,18 +25,17 @@ void main() {
 
       expect(requests, hasLength(2));
       expect(requests[0].method, 'PUT');
-      expect(requests[0].url.path, '/devices/device01/command/latest.json');
-      expect(requests[1].method, 'PATCH');
-      expect(requests[1].url.path, '/devices/device01/state.json');
+      expect(requests[0].url.path, '/devices/device01/control/relay2.json');
+      expect(requests[1].method, 'PUT');
+      expect(requests[1].url.path, '/devices/device01/command/latest.json');
 
-      final payload = jsonDecode(requests[0].body) as Map<String, dynamic>;
+      expect(jsonDecode(requests[0].body), isTrue);
+
+      final payload = jsonDecode(requests[1].body) as Map<String, dynamic>;
       expect(payload['target'], 'relay2');
       expect(payload['action'], 'on');
       expect(payload['source'], 'app');
       expect(payload['commandId'], startsWith('cmd_'));
-
-      final statePatch = jsonDecode(requests[1].body) as Map<String, dynamic>;
-      expect(statePatch, <String, dynamic>{'relay2': true});
     },
   );
 
@@ -57,18 +56,18 @@ void main() {
 
     expect(requests, hasLength(3));
     expect(requests[0].method, 'PUT');
-    expect(requests[0].url.path, '/devices/device01/command/latest.json');
-    expect(requests[1].method, 'PATCH');
-    expect(requests[1].url.path, '/devices/device01/state.json');
+    expect(requests[0].url.path, '/devices/device01/control/relay4.json');
+    expect(requests[1].method, 'PUT');
+    expect(requests[1].url.path, '/devices/device01/command/latest.json');
     expect(requests[2].method, 'PATCH');
     expect(requests[2].url.path, '/smart_home/relays.json');
 
-    final commandPayload = jsonDecode(requests[0].body) as Map<String, dynamic>;
+    expect(jsonDecode(requests[0].body), isFalse);
+
+    final commandPayload = jsonDecode(requests[1].body) as Map<String, dynamic>;
     expect(commandPayload['target'], 'relay4');
     expect(commandPayload['action'], 'off');
 
-    final statePatch = jsonDecode(requests[1].body) as Map<String, dynamic>;
-    expect(statePatch, <String, dynamic>{'relay4': false});
     final legacyPatch = jsonDecode(requests[2].body) as Map<String, dynamic>;
     expect(legacyPatch, <String, dynamic>{'relay4': false});
   });
@@ -112,19 +111,18 @@ void main() {
       expect(requests[0].method, 'GET');
       expect(requests[0].url.path, '/devices/device01.json');
       expect(requests[1].method, 'PUT');
-      expect(requests[1].url.path, '/devices/device01/command/latest.json');
-      expect(requests[2].method, 'PATCH');
-      expect(requests[2].url.path, '/devices/device01/state.json');
+      expect(requests[1].url.path, '/devices/device01/control/relay1.json');
+      expect(requests[2].method, 'PUT');
+      expect(requests[2].url.path, '/devices/device01/command/latest.json');
       expect(requests[3].method, 'PATCH');
       expect(requests[3].url.path, '/smart_home/relays.json');
 
+      expect(jsonDecode(requests[1].body), isTrue);
+
       final commandPayload =
-          jsonDecode(requests[1].body) as Map<String, dynamic>;
+          jsonDecode(requests[2].body) as Map<String, dynamic>;
       expect(commandPayload['target'], 'relay1');
       expect(commandPayload['action'], 'on');
-
-      final statePatch = jsonDecode(requests[2].body) as Map<String, dynamic>;
-      expect(statePatch, <String, dynamic>{'relay1': true});
     },
   );
 
@@ -174,49 +172,46 @@ void main() {
     },
   );
 
-  test(
-    'watchDashboard keeps command/latest-only mode for modern nodes',
-    () async {
-      final client = MockClient((http.Request request) async {
-        switch (request.url.path) {
-          case '/devices/device01.json':
-            return http.Response(
-              jsonEncode(<String, dynamic>{
-                'info': <String, dynamic>{
-                  'name': 'O dien thong minh',
-                  'location': 'Phong khach',
+  test('watchDashboard keeps normal control mode for modern nodes', () async {
+    final client = MockClient((http.Request request) async {
+      switch (request.url.path) {
+        case '/devices/device01.json':
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'info': <String, dynamic>{
+                'name': 'O dien thong minh',
+                'location': 'Phong khach',
+              },
+              'state': <String, dynamic>{
+                'online': true,
+                'relay1': false,
+                'relay2': true,
+                'relay3': false,
+                'relay4': false,
+                'lastCommandId': 'cmd_10',
+              },
+              'history': <String, dynamic>{
+                'h1': <String, dynamic>{
+                  'eventType': 'relay_change',
+                  'target': 'relay2',
+                  'source': 'app',
+                  'newValue': true,
+                  'time': 1773661837149,
                 },
-                'state': <String, dynamic>{
-                  'online': true,
-                  'relay1': false,
-                  'relay2': true,
-                  'relay3': false,
-                  'relay4': false,
-                  'lastCommandId': 'cmd_10',
-                },
-                'history': <String, dynamic>{
-                  'h1': <String, dynamic>{
-                    'eventType': 'relay_change',
-                    'target': 'relay2',
-                    'source': 'app',
-                    'newValue': true,
-                    'time': 1773661837149,
-                  },
-                },
-              }),
-              200,
-            );
-          case '/smart_home.json':
-            return http.Response('null', 200);
-          default:
-            return http.Response('null', 200);
-        }
-      });
+              },
+            }),
+            200,
+          );
+        case '/smart_home.json':
+          return http.Response('null', 200);
+        default:
+          return http.Response('null', 200);
+      }
+    });
 
-      final repository = DeviceRepository(deviceId: 'device01', client: client);
-      final dashboard = await repository.watchDashboard().first;
+    final repository = DeviceRepository(deviceId: 'device01', client: client);
+    final dashboard = await repository.watchDashboard().first;
 
-      expect(dashboard.prefersLegacyRelayWrite, isFalse);
-    },
-  );
+    expect(dashboard.prefersLegacyRelayWrite, isFalse);
+  });
 }

@@ -80,7 +80,7 @@ class _ControlPageState extends State<ControlPage> {
                 eyebrow: 'Dieu khien',
                 title: 'Dong cat tai theo tung kenh',
                 subtitle:
-                    'Moi lenh deu ghi dong thoi vao command/latest va state/relayX. Neu phat hien node cu, app ghi them smart_home/relays.',
+                    'Moi lenh deu ghi vao control/relayX va command/latest. Neu phat hien node cu, app ghi them smart_home/relays.',
               ),
               const SizedBox(height: 18),
               const FrostPanel(
