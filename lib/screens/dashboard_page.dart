@@ -112,9 +112,7 @@ class DashboardPage extends StatelessWidget {
                           ],
                           const SizedBox(height: 22),
                           Text(
-                            dashboard.prefersLegacyRelayWrite
-                                ? 'App dang ghi lenh vao control/relayX va command/latest, dong thoi mirror smart_home/relays de giu tuong thich voi firmware cu.'
-                                : 'App hien thi trang thai relay tu state thuc te, con lenh dieu khien duoc gui vao control/relayX va command/latest.',
+                            'App gui lenh qua command/latest va nhan trang thai relay tu state thuc te cua ESP theo luong realtime.',
                             style: Theme.of(context).textTheme.bodyLarge,
                           ),
                         ],
@@ -288,9 +286,7 @@ class DashboardPage extends StatelessWidget {
                       ),
                       const SizedBox(height: 10),
                       Text(
-                        dashboard.prefersLegacyRelayWrite
-                            ? 'Lenh nay duoc ghi vao control/relayX, command/latest va smart_home/relays de firmware cu van nhan duoc.'
-                            : 'Lenh nay duoc ghi vao control/relayX va command/latest. Giao dien relay van doi theo state thuc te tu ESP cap nhat.',
+                        'Lenh nay duoc ghi vao command/latest. Giao dien relay chi doi khi ESP cap nhat state thuc te len Firebase.',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],

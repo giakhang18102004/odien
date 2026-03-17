@@ -287,7 +287,7 @@ class _ConnectionGatePageState extends State<ConnectionGatePage> {
                                   const LinearProgressIndicator(),
                                   const SizedBox(height: 18),
                                   Text(
-                                    'Dang doc node devices/${repository?.deviceId ?? _normalizedDeviceId} va smart_home...',
+                                    'Dang doc cac node devices/${repository?.deviceId ?? _normalizedDeviceId}/info, state va settings...',
                                     style: Theme.of(
                                       context,
                                     ).textTheme.bodyLarge,
@@ -334,8 +334,8 @@ class _ConnectionGatePageState extends State<ConnectionGatePage> {
                                       ),
                                       StatusBadge(
                                         label: summary.hasLegacyBridge
-                                            ? 'Co du lieu smart_home'
-                                            : 'Dang dung node moi',
+                                            ? 'Co du lieu legacy'
+                                            : 'Dang dung node toi uu',
                                         color: AppPalette.gold,
                                         icon: Icons.swap_horiz_rounded,
                                       ),

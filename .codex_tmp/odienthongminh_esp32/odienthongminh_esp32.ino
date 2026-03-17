@@ -6,6 +6,7 @@
 #include <WiFiManager.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
+#include <esp_system.h>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,8 @@ constexpr bool RELAY_ACTIVE_LOW = false;
 constexpr bool BUTTON_ACTIVE_LOW = true;
 constexpr bool BUZZER_ACTIVE_HIGH = true;
 constexpr bool LIGHT_DO_ACTIVE_LOW = true;
-constexpr bool ENABLE_LEGACY_SMART_HOME_MIRROR = true;
+constexpr bool ENABLE_LEGACY_SMART_HOME_MIRROR = false;
+constexpr bool ENABLE_LIGHT_ANALOG = false;
 
 constexpr uint8_t DHT_TYPE = DHT11;
 constexpr uint8_t LCD_I2C_ADDRESS = 0x27;
@@ -56,18 +58,21 @@ constexpr uint16_t LCD_COLUMNS = 16;
 constexpr uint16_t LCD_ROWS = 2;
 
 constexpr unsigned long BUTTON_DEBOUNCE_MS = 55;
+constexpr unsigned long BUTTON1_SOFT_HOLD_MS = 220;
 constexpr unsigned long WIFI_RETRY_MS = 10000;
 constexpr unsigned long SENSOR_READ_MS = 3000;
-constexpr unsigned long COMMAND_POLL_MS = 1200;
+constexpr unsigned long COMMAND_POLL_MS = 500;
 constexpr unsigned long SETTINGS_POLL_MS = 15000;
 constexpr unsigned long STATE_PUSH_MS = 5000;
 constexpr unsigned long HISTORY_FLUSH_MS = 600;
 constexpr unsigned long LCD_REFRESH_MS = 1000;
 constexpr unsigned long LCD_PAGE_MS = 2500;
 constexpr uint16_t HTTP_TIMEOUT_MS = 7000;
+constexpr unsigned long HTTP_ACTION_GAP_MS = 120;
 
 // GPIO27 is ADC2 on ESP32 and may conflict with WiFi. If AO becomes unstable,
 // keep using DO14 for threshold logic or move AO to an ADC1 pin later.
+// Analog light read is disabled by default for stability while WiFi is active.
 constexpr int LIGHT_ADC_MIN = 0;
 constexpr int LIGHT_ADC_MAX = 4095;
 constexpr bool LIGHT_PERCENT_INVERTED = false;
@@ -111,7 +116,9 @@ button{width:100%;padding:11px;border-radius:999px;border:none;background:linear
 struct ButtonState {
   bool stablePressed = false;
   bool lastReadingPressed = false;
+  bool holdHandled = false;
   unsigned long lastDebounceAt = 0;
+  unsigned long pressedAt = 0;
 };
 
 struct HistoryEvent {
@@ -148,10 +155,20 @@ float lightLimitPercent = 75.0f;
 String mode = "manual";
 String lastProcessedCommandId = "";
 String lastActionSource = "boot";
+String lastAppliedCommandId = "";
+String lastAppliedCommandTarget = "";
+String lastAppliedCommandAction = "";
+String lastAppliedCommandSource = "";
+String lastAppliedCommandStatus = "";
+String relayLastSources[4] = {"boot", "boot", "boot", "boot"};
+
+bool relayMetaDirty[4] = {false, false, false, false};
+bool commandAckDirty = false;
 
 bool stateDirty = true;
 
 unsigned long lastWifiAttemptAt = 0;
+unsigned long lastHttpActionFinishedAt = 0;
 unsigned long lastSensorReadAt = 0;
 unsigned long lastCommandPollAt = 0;
 unsigned long lastSettingsPollAt = 0;
@@ -172,14 +189,20 @@ String devicePath(const String& child) {
   return deviceBasePath() + "/" + child;
 }
 
-String firebaseUrlFor(const String& path) {
+String firebaseUrlFor(const String& path, const String& extraQuery = "") {
   String url = DATABASE_URL;
   if (url.endsWith("/")) {
     url.remove(url.length() - 1);
   }
   url += "/" + path + ".json";
+  char queryJoin = '?';
   if (strlen(DATABASE_AUTH) > 0) {
     url += "?auth=" + String(DATABASE_AUTH);
+    queryJoin = '&';
+  }
+  if (extraQuery.length() > 0) {
+    url += queryJoin;
+    url += extraQuery;
   }
   return url;
 }
@@ -201,6 +224,57 @@ uint8_t buzzerIdleLevel() {
 
 void logLine(const String& message) {
   Serial.println(message);
+}
+
+const char* resetReasonLabel(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:
+      return "POWERON";
+    case ESP_RST_EXT:
+      return "EXT";
+    case ESP_RST_SW:
+      return "SW";
+    case ESP_RST_PANIC:
+      return "PANIC";
+    case ESP_RST_INT_WDT:
+      return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+      return "TASK_WDT";
+    case ESP_RST_WDT:
+      return "WDT";
+    case ESP_RST_DEEPSLEEP:
+      return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT";
+    case ESP_RST_SDIO:
+      return "SDIO";
+    case ESP_RST_UNKNOWN:
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void logBootDiagnostics() {
+  const esp_reset_reason_t reason = esp_reset_reason();
+  logLine(String("[BOOT] Reset reason: ") + resetReasonLabel(reason) + " (" +
+          static_cast<int>(reason) + ")");
+  logLine(String("[BOOT] Heap free: ") + ESP.getFreeHeap() + " bytes");
+  logLine(String("[BOOT] Heap min : ") + ESP.getMinFreeHeap() + " bytes");
+}
+
+void waitForHttpGap() {
+  if (lastHttpActionFinishedAt == 0) {
+    return;
+  }
+
+  const unsigned long elapsed = millis() - lastHttpActionFinishedAt;
+  if (elapsed < HTTP_ACTION_GAP_MS) {
+    delay(HTTP_ACTION_GAP_MS - elapsed);
+  }
+}
+
+void markHttpActionFinished() {
+  lastHttpActionFinishedAt = millis();
 }
 
 bool i2cDeviceExists(uint8_t address) {
@@ -405,12 +479,15 @@ bool sendJsonRequest(const char* method,
     return false;
   }
 
+  waitForHttpGap();
+
   WiFiClientSecure client;
   client.setInsecure();
 
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
-  if (!http.begin(client, firebaseUrlFor(path))) {
+  if (!http.begin(client, firebaseUrlFor(path, "print=silent"))) {
+    markHttpActionFinished();
     return false;
   }
 
@@ -431,6 +508,7 @@ bool sendJsonRequest(const char* method,
   }
 
   http.end();
+  markHttpActionFinished();
 
   if (httpCode < 200 || httpCode >= 300) {
     logLine(String("[HTTP] ") + method + " " + path + " -> " + httpCode);
@@ -446,25 +524,29 @@ bool getJson(const String& path, DynamicJsonDocument& doc) {
     return false;
   }
 
+  waitForHttpGap();
+
   WiFiClientSecure client;
   client.setInsecure();
 
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
-  if (!http.begin(client, firebaseUrlFor(path))) {
+  if (!http.begin(client, firebaseUrlFor(path, "timeout=4s"))) {
+    markHttpActionFinished();
     return false;
   }
 
   const int httpCode = http.GET();
   const String body = http.getString();
   http.end();
+  markHttpActionFinished();
 
   if (httpCode < 200 || httpCode >= 300) {
     logLine(String("[HTTP] GET ") + path + " -> " + httpCode);
     return false;
   }
 
-  if (body.isEmpty() || body == "null") {
+  if (body.length() == 0 || body == "null") {
     return true;
   }
 
@@ -624,7 +706,7 @@ bool publishState(bool forcePush = false) {
     return false;
   }
 
-  DynamicJsonDocument doc(768);
+  DynamicJsonDocument doc(1536);
   JsonObject root = doc.to<JsonObject>();
   root["online"] = true;
   root["mode"] = mode;
@@ -633,9 +715,36 @@ bool publishState(bool forcePush = false) {
   root["relay3"] = relayStates[2];
   root["relay4"] = relayStates[3];
   root["buzzerEnabled"] = buzzerEnabled;
+  root["buzzerMuted"] = !buzzerEnabled;
   root["alarm"] = alarmActive;
+  root["overTempLock"] = alarmActive;
   root["lastSource"] = lastActionSource;
   root["lastCommandId"] = lastProcessedCommandId;
+  root["uptime"] = String(millis() / 1000) + "s";
+  root["lightText"] = lightTriggered ? "Sang" : "Toi";
+
+  for (uint8_t index = 0; index < 4; index++) {
+    const String relaySourceKey = String(RELAY_IDS[index]) + "Source";
+    root[relaySourceKey] = relayLastSources[index];
+
+    if (!relayMetaDirty[index]) {
+      continue;
+    }
+
+    const String relayChangedAtKey = String(RELAY_IDS[index]) + "ChangedAt";
+    JsonObject changedAt = root.createNestedObject(relayChangedAtKey);
+    changedAt[".sv"] = "timestamp";
+  }
+
+  if (commandAckDirty) {
+    root["lastAppliedCommandId"] = lastAppliedCommandId;
+    root["lastAppliedCommandTarget"] = lastAppliedCommandTarget;
+    root["lastAppliedCommandAction"] = lastAppliedCommandAction;
+    root["lastAppliedCommandSource"] = lastAppliedCommandSource;
+    root["lastAppliedCommandStatus"] = lastAppliedCommandStatus;
+    JsonObject appliedAt = root.createNestedObject("lastAppliedCommandAt");
+    appliedAt[".sv"] = "timestamp";
+  }
 
   if (!isnan(temperatureC)) {
     root["temperature"] = temperatureC;
@@ -658,38 +767,12 @@ bool publishState(bool forcePush = false) {
     return false;
   }
 
-  if (ENABLE_LEGACY_SMART_HOME_MIRROR) {
-    DynamicJsonDocument legacyDoc(768);
-    JsonObject legacyRoot = legacyDoc.to<JsonObject>();
-    JsonObject relays = legacyRoot.createNestedObject("relays");
-    relays["relay1"] = relayStates[0];
-    relays["relay2"] = relayStates[1];
-    relays["relay3"] = relayStates[2];
-    relays["relay4"] = relayStates[3];
-
-    JsonObject sensors = legacyRoot.createNestedObject("sensors");
-    if (!isnan(temperatureC)) {
-      sensors["temperature"] = temperatureC;
-    }
-    if (!isnan(humidityPct)) {
-      sensors["humidity"] = humidityPct;
-    }
-    if (lightRaw >= 0) {
-      sensors["light"] = lightRaw;
-    }
-    if (lightPercent >= 0) {
-      sensors["light_percent"] = lightPercent;
-    }
-
-    JsonObject status = legacyRoot.createNestedObject("status");
-    status["online"] = true;
-    status["uptime"] = millis() / 1000;
-
-    sendJsonRequest("PATCH", "smart_home", legacyDoc);
-  }
-
   lastStatePushAt = millis();
   stateDirty = false;
+  commandAckDirty = false;
+  for (uint8_t index = 0; index < 4; index++) {
+    relayMetaDirty[index] = false;
+  }
   return true;
 }
 
@@ -757,18 +840,27 @@ void restoreStateFromFirebase() {
     if (!root["lastCommandId"].isNull()) {
       lastProcessedCommandId = String(root["lastCommandId"].as<const char*>());
     }
-    return;
-  }
-
-  DynamicJsonDocument legacyDoc(512);
-  if (getJson("smart_home/relays", legacyDoc) && legacyDoc.size() > 0) {
-    JsonObjectConst relays = legacyDoc.as<JsonObjectConst>();
     for (uint8_t index = 0; index < 4; index++) {
-      if (!relays[RELAY_IDS[index]].isNull()) {
-        setRelayHardware(index, relays[RELAY_IDS[index]].as<bool>());
+      const String relaySourceKey = String(RELAY_IDS[index]) + "Source";
+      if (!root[relaySourceKey].isNull()) {
+        relayLastSources[index] =
+            String(root[relaySourceKey].as<const char*>());
       }
     }
   }
+}
+
+void markCommandAck(const String& commandId,
+                    const String& target,
+                    const String& action,
+                    const String& source,
+                    const String& status) {
+  lastAppliedCommandId = commandId;
+  lastAppliedCommandTarget = target;
+  lastAppliedCommandAction = action;
+  lastAppliedCommandSource = source;
+  lastAppliedCommandStatus = status;
+  commandAckDirty = true;
 }
 
 bool applyRelayState(uint8_t relayIndex,
@@ -788,6 +880,8 @@ bool applyRelayState(uint8_t relayIndex,
 
   setRelayHardware(relayIndex, newState);
   lastActionSource = source;
+  relayLastSources[relayIndex] = source;
+  relayMetaDirty[relayIndex] = true;
   stateDirty = true;
 
   if (addHistory) {
@@ -833,7 +927,7 @@ void pollFirebaseCommand() {
   const char* sourceChars = root["source"] | "app";
 
   const String commandId = String(commandIdChars);
-  if (commandId.isEmpty() || commandId == lastProcessedCommandId) {
+  if (commandId.length() == 0 || commandId == lastProcessedCommandId) {
     return;
   }
 
@@ -846,6 +940,7 @@ void pollFirebaseCommand() {
   const int relayIndex = relayIndexFromTarget(target);
   if (relayIndex < 0) {
     lastProcessedCommandId = commandId;
+    markCommandAck(commandId, target, action, source, "ignored_target");
     stateDirty = true;
     publishState(true);
     return;
@@ -860,11 +955,19 @@ void pollFirebaseCommand() {
     nextState = !relayStates[relayIndex];
   } else {
     lastProcessedCommandId = commandId;
+    markCommandAck(commandId, target, action, source, "ignored_action");
+    stateDirty = true;
+    publishState(true);
     return;
   }
 
-  applyRelayState(relayIndex, nextState, source, true);
+  const bool changed = applyRelayState(relayIndex, nextState, source, true);
   lastProcessedCommandId = commandId;
+  markCommandAck(commandId,
+                 target,
+                 action,
+                 source,
+                 changed ? "applied" : "noop");
   publishState(true);
 }
 
@@ -880,8 +983,13 @@ void readSensors() {
   }
 
   lightTriggered = readLightTriggered();
-  lightRaw = analogRead(LIGHT_AO_PIN);
-  lightPercent = calculateLightPercent(lightRaw);
+  if (ENABLE_LIGHT_ANALOG) {
+    lightRaw = analogRead(LIGHT_AO_PIN);
+    lightPercent = calculateLightPercent(lightRaw);
+  } else {
+    lightRaw = -1;
+    lightPercent = -1;
+  }
 
   updateAlarmState();
   stateDirty = true;
@@ -903,8 +1011,26 @@ void scanButtons() {
     if (readingPressed != buttons[index].stablePressed) {
       buttons[index].stablePressed = readingPressed;
       if (buttons[index].stablePressed) {
-        handleLocalButton(index);
+        buttons[index].pressedAt = millis();
+        buttons[index].holdHandled = false;
+
+        if (index != 0) {
+          handleLocalButton(index);
+          buttons[index].holdHandled = true;
+        }
+      } else {
+        buttons[index].pressedAt = 0;
+        buttons[index].holdHandled = false;
       }
+    }
+
+    if (index == 0 &&
+        buttons[index].stablePressed &&
+        !buttons[index].holdHandled &&
+        buttons[index].pressedAt != 0 &&
+        millis() - buttons[index].pressedAt >= BUTTON1_SOFT_HOLD_MS) {
+      handleLocalButton(index);
+      buttons[index].holdHandled = true;
     }
   }
 }
@@ -1028,16 +1154,21 @@ void initializePins() {
     const bool pressed = readButtonPressed(index);
     buttons[index].stablePressed = pressed;
     buttons[index].lastReadingPressed = pressed;
+    buttons[index].holdHandled = false;
     buttons[index].lastDebounceAt = millis();
+    buttons[index].pressedAt = 0;
   }
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(LIGHT_AO_PIN, ADC_11db);
+  if (ENABLE_LIGHT_ANALOG) {
+    analogReadResolution(12);
+    analogSetPinAttenuation(LIGHT_AO_PIN, ADC_11db);
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   delay(300);
+  logBootDiagnostics();
 
   initializePins();
   dht.begin();
